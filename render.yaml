@@ -1,0 +1,10 @@
+services:
+  - type: worker
+    name: telegram-upscale-bot
+    env: python
+    buildCommand: "apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false   # Set this manually in Render dashboard
+    plan: free
