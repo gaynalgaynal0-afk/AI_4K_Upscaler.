@@ -1,8 +1,14 @@
+import subprocess, sys
+subprocess.run([sys.executable, "-m", "pip", "install",
+    "pyrofork==2.3.36", "tgcrypto==1.2.5", "onnxruntime==1.26.0",
+    "numpy==1.26.4", "opencv-python-headless==4.10.0.84"
+], check=True)
+
 import os
 import logging
 import asyncio
 import tempfile
-import subprocess
+import subprocess as sp
 import numpy as np
 from pathlib import Path
 from pyrofork import Client, filters
@@ -35,10 +41,8 @@ def get_onnx_path(key: str) -> Path | None:
     p = MODELS_DIR / f"{name}.onnx"
     return p if p.exists() else None
 
-# ── User session storage ──────────────────────────────────────────────────────
-# { user_id: { input_path, mode, quality_key, target_fps, video_info, state } }
+# ── User Sessions ─────────────────────────────────────────────────────────────
 sessions = {}
-
 STATE_CHOOSE_MODE  = "choose_mode"
 STATE_CHOOSE_MODEL = "choose_model"
 STATE_WAIT_FPS     = "wait_fps"
@@ -51,7 +55,7 @@ def get_video_info(path: str) -> dict:
         "-show_entries", "stream=width,height,r_frame_rate",
         "-of", "csv=p=0", path
     ]
-    out = subprocess.check_output(cmd).decode().strip().split(",")
+    out = sp.check_output(cmd).decode().strip().split(",")
     width, height = int(out[0]), int(out[1])
     num, den = map(int, out[2].split("/"))
     fps = round(num / den, 3)
@@ -75,7 +79,7 @@ def upscale_frames_onnx(input_path: str, output_path: str, model_key: str) -> bo
         frames_in  = os.path.join(frame_dir, "in_%06d.png")
         frames_out = os.path.join(frame_dir, "out_%06d.png")
 
-        subprocess.run([
+        sp.run([
             "ffmpeg", "-y", "-i", input_path,
             "-vf", f"fps={fps}", "-pix_fmt", "rgb24",
             frames_in
@@ -85,56 +89,48 @@ def upscale_frames_onnx(input_path: str, output_path: str, model_key: str) -> bo
         if not in_files:
             return False
 
-        logger.info(f"Processing {len(in_files)} frames...")
-
         for idx, img_path in enumerate(in_files, start=1):
+            import cv2
             img_bgr = cv2.imread(str(img_path))
             img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-
-            tensor = img_rgb.astype(np.float16) / 255.0
-            tensor = np.transpose(tensor, (2, 0, 1))
-            tensor = np.expand_dims(tensor, axis=0)
+            tensor  = img_rgb.astype(np.float16) / 255.0
+            tensor  = np.transpose(tensor, (2, 0, 1))
+            tensor  = np.expand_dims(tensor, axis=0)
 
             result = session.run(["output"], {"input": tensor})[0]
             result = np.squeeze(result, axis=0)
             result = np.transpose(result, (1, 2, 0))
             result = np.clip(result * 255.0, 0, 255).astype(np.uint8)
-            result_bgr = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
-
-            cv2.imwrite(os.path.join(frame_dir, f"out_{idx:06d}.png"), result_bgr)
+            cv2.imwrite(os.path.join(frame_dir, f"out_{idx:06d}.png"),
+                        cv2.cvtColor(result, cv2.COLOR_RGB2BGR))
 
             if idx % 50 == 0:
                 logger.info(f"  {idx}/{len(in_files)} frames done")
 
         temp_noaudio = output_path + "_noaudio.mp4"
-        subprocess.run([
+        sp.run([
             "ffmpeg", "-y",
             "-framerate", str(fps),
             "-i", frames_out,
             "-c:v", "libx264", "-crf", "16", "-preset", "fast",
-            "-pix_fmt", "yuv420p",
-            temp_noaudio
+            "-pix_fmt", "yuv420p", temp_noaudio
         ], check=True, capture_output=True)
 
-    subprocess.run([
+    sp.run([
         "ffmpeg", "-y",
         "-i", temp_noaudio, "-i", input_path,
         "-c:v", "copy", "-c:a", "aac",
         "-map", "0:v:0", "-map", "1:a?",
         "-shortest", output_path
     ], check=True, capture_output=True)
-
     os.remove(temp_noaudio)
     return True
 
 # ── FPS Interpolation ─────────────────────────────────────────────────────────
 def upscale_fps(input_path: str, output_path: str, target_fps: float) -> bool:
-    subprocess.run([
+    sp.run([
         "ffmpeg", "-y", "-i", input_path,
-        "-vf", (
-            f"minterpolate=fps={target_fps}:"
-            "mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"
-        ),
+        "-vf", f"minterpolate=fps={target_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1",
         "-c:v", "libx264", "-crf", "16", "-preset", "fast",
         "-c:a", "copy", output_path
     ], check=True, capture_output=True)
@@ -149,10 +145,10 @@ def mode_keyboard():
     ])
 
 def model_keyboard():
-    rows = []
-    for key, (_, label) in AVAILABLE_MODELS.items():
-        rows.append([InlineKeyboardButton(label, callback_data=f"model_{key}")])
-    return InlineKeyboardMarkup(rows)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=f"model_{key}")]
+        for key, (_, label) in AVAILABLE_MODELS.items()
+    ])
 
 # ── /start ────────────────────────────────────────────────────────────────────
 @app.on_message(filters.command("start"))
@@ -170,9 +166,9 @@ async def start(client: Client, message: Message):
 # ── /cancel ───────────────────────────────────────────────────────────────────
 @app.on_message(filters.command("cancel"))
 async def cancel(client: Client, message: Message):
-    uid = message.from_user.id
+    uid  = message.from_user.id
     sess = sessions.pop(uid, {})
-    p = sess.get("input_path")
+    p    = sess.get("input_path")
     if p and os.path.exists(p):
         try: os.remove(p)
         except: pass
@@ -181,13 +177,10 @@ async def cancel(client: Client, message: Message):
 # ── Receive Video ─────────────────────────────────────────────────────────────
 @app.on_message(filters.video | filters.document)
 async def receive_video(client: Client, message: Message):
-    uid  = message.from_user.id
+    uid   = message.from_user.id
     media = message.video or message.document
-
     if not media:
         return
-
-    # Check it's a video document
     if message.document and not message.document.mime_type.startswith("video"):
         return
 
@@ -197,14 +190,12 @@ async def receive_video(client: Client, message: Message):
         return
 
     status = await message.reply(f"📥 Downloading your video ({size_mb:.1f} MB)…")
-
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    tmp    = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tmp.close()
-
     await client.download_media(message, file_name=tmp.name)
 
     try:
-        info = get_video_info(tmp.name)
+        info      = get_video_info(tmp.name)
         info_text = (
             f"📹 *Video detected*\n"
             f"• Resolution: `{info['width']}×{info['height']}`\n"
@@ -230,7 +221,7 @@ async def receive_video(client: Client, message: Message):
         parse_mode="markdown"
     )
 
-# ── Callback: Mode & Model ────────────────────────────────────────────────────
+# ── Callbacks ─────────────────────────────────────────────────────────────────
 @app.on_callback_query()
 async def handle_callback(client: Client, query: CallbackQuery):
     uid  = query.from_user.id
@@ -243,11 +234,8 @@ async def handle_callback(client: Client, query: CallbackQuery):
 
     await query.answer()
 
-    # ── Mode selection ──
     if data.startswith("mode_"):
-        sess["mode"]  = data
-        sess["state"] = STATE_CHOOSE_MODEL
-
+        sess["mode"] = data
         if data == "mode_fps":
             info     = sess.get("video_info", {})
             fps_text = f" (current: `{info.get('fps', '?')}` fps)" if info else ""
@@ -257,17 +245,17 @@ async def handle_callback(client: Client, query: CallbackQuery):
                 parse_mode="markdown"
             )
         else:
+            sess["state"] = STATE_CHOOSE_MODEL
             await query.edit_message_text(
                 "🔍 *Choose your AI upscale model:*\n_(all models upscale 2×)_",
                 reply_markup=model_keyboard(),
                 parse_mode="markdown"
             )
 
-    # ── Model selection ──
     elif data.startswith("model_"):
-        model_key        = data.replace("model_", "")
+        model_key           = data.replace("model_", "")
         sess["quality_key"] = model_key
-        _, label         = AVAILABLE_MODELS[model_key]
+        _, label            = AVAILABLE_MODELS[model_key]
 
         if sess["mode"] == "mode_both":
             info     = sess.get("video_info", {})
@@ -279,7 +267,6 @@ async def handle_callback(client: Client, query: CallbackQuery):
                 parse_mode="markdown"
             )
         else:
-            # Quality only — start processing
             sess["state"] = None
             await query.edit_message_text(
                 f"✅ Model: *{label}*\n\n⚙️ Processing… this may take a few minutes ☕",
@@ -287,12 +274,11 @@ async def handle_callback(client: Client, query: CallbackQuery):
             )
             asyncio.create_task(process_video(client, uid, query.message.chat.id))
 
-# ── Text: FPS input ───────────────────────────────────────────────────────────
+# ── FPS Text Input ────────────────────────────────────────────────────────────
 @app.on_message(filters.text & ~filters.command(["start", "cancel"]))
 async def handle_text(client: Client, message: Message):
     uid  = message.from_user.id
     sess = sessions.get(uid)
-
     if not sess or sess.get("state") != STATE_WAIT_FPS:
         return
 
@@ -307,7 +293,6 @@ async def handle_text(client: Client, message: Message):
     info       = sess.get("video_info", {})
     orig_fps   = info.get("fps", 0)
     multiplier = f"×{round(target_fps / orig_fps, 2)}" if orig_fps else ""
-
     sess["target_fps"] = target_fps
     sess["state"]      = None
 
@@ -329,20 +314,16 @@ async def process_video(client: Client, uid: int, chat_id: int):
     current     = input_path
 
     try:
-        # Step 1: Quality upscale
         if mode in ("mode_quality", "mode_both") and quality_key:
             await client.send_message(chat_id, "🔍 Running AI upscale (2×)… extracting frames...")
             q_out = input_path + "_quality.mp4"
-            ok    = await loop.run_in_executor(
-                None, upscale_frames_onnx, current, q_out, quality_key
-            )
+            ok    = await loop.run_in_executor(None, upscale_frames_onnx, current, q_out, quality_key)
             if not ok:
                 await client.send_message(chat_id, "❌ Quality upscale failed — model file missing.")
                 return
             current = q_out
             await client.send_message(chat_id, "✅ Quality upscale done!")
 
-        # Step 2: FPS interpolation
         if mode in ("mode_fps", "mode_both") and target_fps:
             await client.send_message(chat_id, f"🎬 Interpolating to {target_fps} FPS…")
             f_out = input_path + "_fps.mp4"
@@ -350,19 +331,15 @@ async def process_video(client: Client, uid: int, chat_id: int):
             current = f_out
             await client.send_message(chat_id, "✅ FPS upscale done!")
 
-        # Upload result
         size_mb = os.path.getsize(current) / (1024 * 1024)
         await client.send_message(chat_id, f"📤 Uploading result ({size_mb:.1f} MB)…")
-
         await client.send_video(
-            chat_id,
-            video=current,
+            chat_id, video=current,
             caption="✅ *Done! Here's your upscaled video.*",
-            parse_mode="markdown",
-            supports_streaming=True,
+            parse_mode="markdown", supports_streaming=True,
         )
 
-    except subprocess.CalledProcessError as e:
+    except sp.CalledProcessError as e:
         stderr = e.stderr.decode() if e.stderr else str(e)
         logger.error(f"FFmpeg error: {stderr}")
         await client.send_message(chat_id, "❌ Processing failed. Check the video format.")
@@ -370,12 +347,10 @@ async def process_video(client: Client, uid: int, chat_id: int):
         logger.exception("Unexpected error")
         await client.send_message(chat_id, f"❌ Error: {str(e)}")
     finally:
-        for f in [
-            input_path,
-            input_path + "_quality.mp4",
-            input_path + "_fps.mp4",
-            input_path + "_quality.mp4_fps.mp4",
-        ]:
+        for f in [input_path,
+                  input_path + "_quality.mp4",
+                  input_path + "_fps.mp4",
+                  input_path + "_quality.mp4_fps.mp4"]:
             if f and os.path.exists(f):
                 try: os.remove(f)
                 except: pass
@@ -383,5 +358,5 @@ async def process_video(client: Client, uid: int, chat_id: int):
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    logger.info("🚀 Bot started with 2GB support via Pyrogram.")
+    logger.info("🚀 Bot started.")
     app.run()
