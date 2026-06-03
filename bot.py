@@ -1,9 +1,3 @@
-import subprocess, sys
-subprocess.run([sys.executable, "-m", "pip", "install",
-    "pyrofork==2.3.36", "tgcrypto==1.2.5", "onnxruntime==1.26.0",
-    "numpy==1.26.4", "opencv-python-headless==4.10.0.84"
-], check=True)
-
 import os
 import logging
 import asyncio
@@ -90,7 +84,6 @@ def upscale_frames_onnx(input_path: str, output_path: str, model_key: str) -> bo
             return False
 
         for idx, img_path in enumerate(in_files, start=1):
-            import cv2
             img_bgr = cv2.imread(str(img_path))
             img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
             tensor  = img_rgb.astype(np.float16) / 255.0

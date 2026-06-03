@@ -1,10 +1,14 @@
 services:
   - type: worker
-    name: telegram-upscale-bot
+    name: AI_4K_Upscaler
     env: python
+    plan: free
     buildCommand: "apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt"
     startCommand: "python bot.py"
     envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false   # Set this manually in Render dashboard
-    plan: free
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
