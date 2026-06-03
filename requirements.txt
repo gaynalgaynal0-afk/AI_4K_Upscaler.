@@ -1,4 +1,4 @@
-pyrogram==2.0.106
+pyrofork==2.3.36
 tgcrypto==1.2.5
 onnxruntime==1.26.0
 numpy==1.26.4

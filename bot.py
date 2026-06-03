@@ -5,8 +5,8 @@ import tempfile
 import subprocess
 import numpy as np
 from pathlib import Path
-from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from pyrofork import Client, filters
+from pyrofork.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
